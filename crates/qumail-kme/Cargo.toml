@@ -1,0 +1,23 @@
+[package]
+name = "qumail-kme"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+qumail-core = { path = "../qumail-core" }
+reqwest = { version = "0.11", features = ["json", "native-tls", "blocking"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+uuid = { workspace = true }
+rand = { workspace = true }
+zeroize = { workspace = true }
+async-trait = "0.1"
+base64 = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

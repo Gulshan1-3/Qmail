@@ -1,0 +1,28 @@
+[package]
+name = "qumail-ui"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "qumail-gui"
+path = "src/main.rs"
+
+[dependencies]
+qumail-core = { path = "../qumail-core" }
+qumail-kme = { path = "../qumail-kme" }
+qumail-crypto = { path = "../qumail-crypto" }
+qumail-net = { path = "../qumail-net" }
+eframe = { version = "0.28", default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }
+egui = "0.28"
+tokio = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+base64 = { workspace = true }
+tempfile = "3"
+lettre = { version = "0.11", default-features = false, features = ["builder", "smtp-transport", "hostname", "pool", "native-tls"] }
+

@@ -1,0 +1,33 @@
+# Rust build output
+/target/
+Cargo.lock
+
+# Key bank files - never commit real key material
+*.keybank.json
+keybank_*.json
+*_keypair.json
+pqc_keypair*.json
+
+# Secrets and credentials
+.env
+*.p12
+*.pem
+*.key
+
+# Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# External repos managed separately
+qkd_kme_server/
+client/
+
+# Temporary / test output
+/tmp/
+*.log

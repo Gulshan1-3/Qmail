@@ -1,0 +1,27 @@
+[package]
+name = "qumail-cli"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "qumail"
+path = "src/main.rs"
+
+[dependencies]
+qumail-core = { path = "../qumail-core" }
+qumail-kme = { path = "../qumail-kme" }
+qumail-crypto = { path = "../qumail-crypto" }
+qumail-net = { path = "../qumail-net" }
+clap = { version = "4", features = ["derive", "env"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+base64 = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
