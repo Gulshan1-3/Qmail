@@ -4,6 +4,8 @@ QuMail is a quantum-safe email client built for ISRO Smart India Hackathon 2025 
 
 It ships as a desktop GUI application and a command-line tool, both written in Rust.
 
+![QuMail Desktop Client](docs/images/qumail_ui.jpg)
+
 ---
 
 ## Why this exists
@@ -203,12 +205,12 @@ Recipients using a standard email client (Gmail, Outlook) see two attachment fil
 
 ```
 qumail-core    2 tests passed
-qumail-crypto  7 tests passed
-qumail-kme     5 tests passed
-qumail-net     9 tests passed (1 unit + 8 interoperability and fault-injection)
+qumail-crypto  9 tests passed
+qumail-kme     6 tests passed
+qumail-net     11 tests passed (1 unit + 10 interoperability and fault-injection)
 qumail-cli     3 end-to-end integration tests passed
 
-Total: 26 tests, 0 failures
+Total: 31 tests, 0 failures
 ```
 
 ---
