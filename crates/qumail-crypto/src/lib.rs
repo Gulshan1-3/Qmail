@@ -18,6 +18,7 @@ use qumail_core::{CryptoContext, KeyId, SecurityLevel};
 use qumail_kme::KeyMaterial;
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
+use rand::RngCore;
 use subtle::ConstantTimeEq;
 use thiserror::Error;
 use zeroize::{Zeroize, Zeroizing};
@@ -287,8 +288,12 @@ impl CryptoProvider for QuMailCryptoEngine {
                     });
                 }
 
-                let (aes_key, nonce_bytes) =
+                let (aes_key, _derived_nonce) =
                     Self::derive_aes_key_and_nonce(&keys[0].bytes, context);
+                // Cryptographically secure random 96-bit nonce (prevents catastrophic nonce-reuse)
+                let mut nonce_bytes = [0u8; 12];
+                rand::thread_rng().fill_bytes(&mut nonce_bytes);
+
                 let cipher = Aes256Gcm::new_from_slice(&*aes_key)
                     .map_err(|e| CryptoError::EncryptionFailed(e.to_string()))?;
                 let nonce = Nonce::from_slice(&nonce_bytes);
@@ -332,11 +337,15 @@ impl CryptoProvider for QuMailCryptoEngine {
                     ek.encapsulate_with_rng(&mut adapter)
                 };
 
-                let (combined_key, nonce_bytes) = Self::derive_hybrid_key_and_nonce(
+                let (combined_key, _derived_nonce) = Self::derive_hybrid_key_and_nonce(
                     &keys[0].bytes,
                     pqc_ss.as_slice(),
                     context,
                 );
+
+                // Cryptographically secure random 96-bit nonce (prevents catastrophic nonce-reuse)
+                let mut nonce_bytes = [0u8; 12];
+                rand::thread_rng().fill_bytes(&mut nonce_bytes);
 
                 let cipher = Aes256Gcm::new_from_slice(&*combined_key)
                     .map_err(|e| CryptoError::EncryptionFailed(e.to_string()))?;
@@ -419,8 +428,18 @@ impl CryptoProvider for QuMailCryptoEngine {
                     });
                 }
 
-                let (aes_key, nonce_bytes) =
+                let (aes_key, derived_nonce) =
                     Self::derive_aes_key_and_nonce(&keys[0].bytes, context);
+                let nonce_bytes = if let Some(ref n) = encrypted.nonce {
+                    if n.len() != 12 {
+                        return Err(CryptoError::DecryptionFailed("Invalid nonce length: expected 12 bytes".into()));
+                    }
+                    let mut arr = [0u8; 12];
+                    arr.copy_from_slice(n);
+                    arr
+                } else {
+                    derived_nonce
+                };
                 let cipher = Aes256Gcm::new_from_slice(&*aes_key)
                     .map_err(|e| CryptoError::DecryptionFailed(e.to_string()))?;
                 let nonce = Nonce::from_slice(&nonce_bytes);
@@ -459,11 +478,22 @@ impl CryptoProvider for QuMailCryptoEngine {
                     .decapsulate_slice(pqc_ct_bytes)
                     .map_err(|e| CryptoError::DecryptionFailed(format!("Invalid ML-KEM ciphertext: {e}")))?;
 
-                let (combined_key, nonce_bytes) = Self::derive_hybrid_key_and_nonce(
+                let (combined_key, derived_nonce) = Self::derive_hybrid_key_and_nonce(
                     &keys[0].bytes,
                     pqc_ss.as_slice(),
                     context,
                 );
+
+                let nonce_bytes = if let Some(ref n) = encrypted.nonce {
+                    if n.len() != 12 {
+                        return Err(CryptoError::DecryptionFailed("Invalid nonce length: expected 12 bytes".into()));
+                    }
+                    let mut arr = [0u8; 12];
+                    arr.copy_from_slice(n);
+                    arr
+                } else {
+                    derived_nonce
+                };
 
                 let cipher = Aes256Gcm::new_from_slice(&*combined_key)
                     .map_err(|e| CryptoError::DecryptionFailed(e.to_string()))?;
@@ -679,5 +709,54 @@ mod tests {
         let ss_dec = parsed_dk.decapsulate(&ct);
 
         assert_eq!(ss_enc.as_slice(), ss_dec.as_slice());
+    }
+
+    #[test]
+    fn test_unique_random_nonces_per_encryption() {
+        let engine = QuMailCryptoEngine::new();
+        let ctx = make_test_context();
+        let mut key_bytes = vec![0u8; 32];
+        rand::thread_rng().fill_bytes(&mut key_bytes);
+        let key = KeyMaterial::new(KeyId::new(), key_bytes);
+
+        let enc1 = engine
+            .encrypt(SecurityLevel::Qaes, b"msg1", &ctx, &[key.clone()])
+            .unwrap();
+        let enc2 = engine
+            .encrypt(SecurityLevel::Qaes, b"msg2", &ctx, &[key.clone()])
+            .unwrap();
+
+        // Nonces must be unique (randomized) even with the exact same context & key
+        assert_ne!(enc1.nonce, enc2.nonce);
+
+        // Both must decrypt correctly using their respective transmitted nonces
+        let dec1 = engine.decrypt(&enc1, &ctx, &[key.clone()]).unwrap();
+        let dec2 = engine.decrypt(&enc2, &ctx, &[key]).unwrap();
+        assert_eq!(&dec1[..], b"msg1");
+        assert_eq!(&dec2[..], b"msg2");
+    }
+
+    #[test]
+    fn test_tampered_nonce_rejected() {
+        let engine = QuMailCryptoEngine::new();
+        let ctx = make_test_context();
+        let mut key_bytes = vec![0u8; 32];
+        rand::thread_rng().fill_bytes(&mut key_bytes);
+        let key = KeyMaterial::new(KeyId::new(), key_bytes);
+
+        let mut enc = engine
+            .encrypt(SecurityLevel::Qaes, b"sensitive payload", &ctx, &[key.clone()])
+            .unwrap();
+
+        // Tamper with transmitted nonce
+        if let Some(ref mut n) = enc.nonce {
+            n[0] ^= 0x01;
+        }
+
+        // Must fail authentication
+        assert!(matches!(
+            engine.decrypt(&enc, &ctx, &[key]),
+            Err(CryptoError::AuthenticationFailed)
+        ));
     }
 }

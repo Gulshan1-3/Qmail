@@ -74,8 +74,9 @@ enum Commands {
         #[arg(long, env = "QMAIL_SMTP_USER")]
         username: String,
 
-        #[arg(long, env = "QMAIL_SMTP_PASS")]
-        password: String,
+        /// SMTP password (if omitted, will read from QMAIL_SMTP_PASS env or prompt securely)
+        #[arg(long, env = "QMAIL_SMTP_PASS", hide_env_values = true)]
+        password: Option<String>,
 
         #[arg(long)]
         from: String,
@@ -140,8 +141,9 @@ enum Commands {
         #[arg(long, env = "QMAIL_IMAP_USER")]
         username: String,
 
-        #[arg(long, env = "QMAIL_IMAP_PASS")]
-        password: String,
+        /// IMAP password (if omitted, will read from QMAIL_IMAP_PASS env or prompt securely)
+        #[arg(long, env = "QMAIL_IMAP_PASS", hide_env_values = true)]
+        password: Option<String>,
 
         #[arg(long, default_value = "INBOX")]
         mailbox: String,
@@ -234,6 +236,29 @@ fn init_tracing(level: &str) -> Result<()> {
         .compact()
         .init();
     Ok(())
+}
+
+fn resolve_password(
+    cli_arg: Option<String>,
+    env_var: &str,
+    prompt_msg: &str,
+) -> Result<String> {
+    if let Some(p) = cli_arg {
+        if !p.is_empty() {
+            return Ok(p);
+        }
+    }
+    if let Ok(p) = std::env::var(env_var) {
+        if !p.is_empty() {
+            return Ok(p);
+        }
+    }
+    // Secure masked console prompt (prevents command line and shell history exposure)
+    let p = rpassword::prompt_password(format!("{prompt_msg}: "))?;
+    if p.is_empty() {
+        anyhow::bail!("Password cannot be empty");
+    }
+    Ok(p)
 }
 
 fn resolve_pqc_encapsulation_key(
@@ -388,11 +413,17 @@ async fn main() -> Result<()> {
                 return Ok(());
             }
 
+            let effective_password = if dry_run {
+                password.unwrap_or_default()
+            } else {
+                resolve_password(password, "QMAIL_SMTP_PASS", "Enter SMTP password")?
+            };
+
             let smtp_conf = SmtpConfig {
                 host: smtp_host,
                 port: smtp_port,
                 username,
-                password,
+                password: effective_password,
                 implicit_tls,
             };
 
@@ -433,11 +464,14 @@ async fn main() -> Result<()> {
 
             let local_pqc = resolve_pqc_decapsulation_key(pqc_key.as_deref())?;
             let crypto = QuMailCryptoEngine::with_pqc_keys(local_pqc, None);
+            let effective_password =
+                resolve_password(password, "QMAIL_IMAP_PASS", "Enter IMAP password")?;
+
             let imap_conf = ImapConfig {
                 host: imap_host,
                 port: imap_port,
                 username,
-                password,
+                password: effective_password,
                 mailbox,
             };
 

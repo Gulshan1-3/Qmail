@@ -16,13 +16,41 @@ use qumail_core::{CryptoContext, KeyId, MessageId, SaeId, SecurityLevel};
 use qumail_crypto::{CryptoProvider, EncryptedMessage};
 use qumail_kme::{KeyManager, KeyRequest};
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
+use std::sync::{Mutex, OnceLock};
 use thiserror::Error;
 use tracing::info;
 
 pub const QUMAIL_MIME_PROTOCOL: &str = "application/vnd.qumail.v1";
 pub const QUMAIL_HEADER_MIME: &str = "application/vnd.qumail.header+json";
+pub const MAX_MIME_RECURSION_DEPTH: usize = 32;
+
+static REPLAY_CACHE: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+
+fn get_replay_cache() -> &'static Mutex<HashSet<String>> {
+    REPLAY_CACHE.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+/// Enforces anti-replay protection. Returns an error if the message_id has already been processed.
+pub fn record_and_check_replay(message_id: &str) -> Result<()> {
+    let mut cache = get_replay_cache().lock().unwrap_or_else(|e| e.into_inner());
+    if !cache.insert(message_id.to_string()) {
+        return Err(anyhow!(
+            "Replay attack detected: message ID '{}' has already been decrypted and processed",
+            message_id
+        ));
+    }
+    Ok(())
+}
+
+/// Resets the in-memory anti-replay cache (for testing isolation).
+#[doc(hidden)]
+pub fn reset_replay_cache_for_testing() {
+    let mut cache = get_replay_cache().lock().unwrap_or_else(|e| e.into_inner());
+    cache.clear();
+}
 
 #[derive(Debug, Error)]
 pub enum MailNetError {
@@ -284,6 +312,9 @@ pub async fn parse_and_decrypt_qumail_message(
     extract_qumail_parts(&parsed, &mut envelope_meta, &mut ciphertext_b64);
 
     if let (Some(meta), Some(ct_b64)) = (envelope_meta, ciphertext_b64) {
+        // Enforce anti-replay check: prevent replay attacks using previously decrypted envelopes
+        record_and_check_replay(&meta.message_id)?;
+
         // Message is encrypted! Recover keys from KeyManager
         let ct = base64::engine::general_purpose::STANDARD
             .decode(&ct_b64)
@@ -402,6 +433,20 @@ fn extract_qumail_parts(
     meta: &mut Option<QuMailEnvelopeHeader>,
     ct: &mut Option<String>,
 ) {
+    extract_qumail_parts_inner(part, meta, ct, 0);
+}
+
+fn extract_qumail_parts_inner(
+    part: &ParsedMail,
+    meta: &mut Option<QuMailEnvelopeHeader>,
+    ct: &mut Option<String>,
+    depth: usize,
+) {
+    if depth > MAX_MIME_RECURSION_DEPTH {
+        tracing::warn!("MIME recursion depth limit ({MAX_MIME_RECURSION_DEPTH}) reached; halting traversal");
+        return;
+    }
+
     let ctype = &part.ctype.mimetype;
     if ctype == QUMAIL_HEADER_MIME || ctype == "application/json" {
         if let Ok(body) = part.get_body() {
@@ -420,7 +465,7 @@ fn extract_qumail_parts(
     }
 
     for sub in &part.subparts {
-        extract_qumail_parts(sub, meta, ct);
+        extract_qumail_parts_inner(sub, meta, ct, depth + 1);
     }
 }
 
@@ -442,6 +487,20 @@ fn collect_mail_parts(
     html: &mut Option<String>,
     attachments: &mut Vec<EmailAttachment>,
 ) -> Result<()> {
+    collect_mail_parts_inner(part, text, html, attachments, 0)
+}
+
+fn collect_mail_parts_inner(
+    part: &ParsedMail,
+    text: &mut String,
+    html: &mut Option<String>,
+    attachments: &mut Vec<EmailAttachment>,
+    depth: usize,
+) -> Result<()> {
+    if depth > MAX_MIME_RECURSION_DEPTH {
+        return Err(anyhow!("MIME recursion depth limit exceeded ({MAX_MIME_RECURSION_DEPTH})"));
+    }
+
     let cdisp = part.get_content_disposition();
     let is_attachment_disp = cdisp.disposition == mailparse::DispositionType::Attachment;
     let filename_opt = cdisp
@@ -452,12 +511,13 @@ fn collect_mail_parts(
 
     if is_attachment_disp || (filename_opt.is_some() && part.ctype.mimetype != "text/plain") {
         let raw_filename = filename_opt.unwrap_or_else(|| "attachment.bin".into());
-        // Path traversal sanitization
+        // Path traversal and null-byte/control-character sanitization
         let clean_filename = Path::new(&raw_filename)
             .file_name()
             .and_then(|n| n.to_str())
-            .unwrap_or("attachment.bin")
-            .to_string();
+            .map(|s| s.chars().filter(|c| *c != '\0' && !c.is_control()).collect::<String>())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "attachment.bin".to_string());
 
         let raw_data = part.get_body_raw().unwrap_or_default();
         let data = if let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(
@@ -491,7 +551,7 @@ fn collect_mail_parts(
         }
     } else {
         for sub in &part.subparts {
-            collect_mail_parts(sub, text, html, attachments)?;
+            collect_mail_parts_inner(sub, text, html, attachments, depth + 1)?;
         }
     }
 

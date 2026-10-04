@@ -137,6 +137,26 @@ struct KeyBankFile {
     pub slots: Vec<KeyBankSlot>,
 }
 
+#[cfg(unix)]
+fn secure_write_file(path: impl AsRef<Path>, content: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)?;
+    file.write_all(content.as_bytes())?;
+    file.flush()?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn secure_write_file(path: impl AsRef<Path>, content: &str) -> std::io::Result<()> {
+    fs::write(path, content)
+}
+
 /// Symmetrical persistent local Key Bank implementing the ISRO 100 x 1 Kb key bank specification.
 pub struct KeyBankStore {
     path: PathBuf,
@@ -192,7 +212,7 @@ impl KeyBankStore {
             if reconciled {
                 let serialized = serde_json::to_string_pretty(&kbf)
                     .map_err(|e| KeyError::Serialization(e.to_string()))?;
-                fs::write(&p, serialized)?;
+                secure_write_file(&p, &serialized)?;
             }
 
             Ok(Self {
@@ -228,7 +248,7 @@ impl KeyBankStore {
             }
             let serialized = serde_json::to_string_pretty(&kbf)
                 .map_err(|e| KeyError::Serialization(e.to_string()))?;
-            fs::write(&p, serialized)?;
+            secure_write_file(&p, &serialized)?;
             Ok(Self {
                 path: p,
                 owner_sae,
@@ -292,14 +312,14 @@ impl KeyBankStore {
             fs::create_dir_all(parent)?;
         }
 
-        fs::write(
+        secure_write_file(
             &alice_path,
-            serde_json::to_string_pretty(&alice_file)
+            &serde_json::to_string_pretty(&alice_file)
                 .map_err(|e| KeyError::Serialization(e.to_string()))?,
         )?;
-        fs::write(
+        secure_write_file(
             &bob_path,
-            serde_json::to_string_pretty(&bob_file)
+            &serde_json::to_string_pretty(&bob_file)
                 .map_err(|e| KeyError::Serialization(e.to_string()))?,
         )?;
 
@@ -309,7 +329,7 @@ impl KeyBankStore {
     fn persist(&self, kbf: &KeyBankFile) -> Result<(), KeyError> {
         let serialized = serde_json::to_string_pretty(kbf)
             .map_err(|e| KeyError::Serialization(e.to_string()))?;
-        fs::write(&self.path, serialized)?;
+        secure_write_file(&self.path, &serialized)?;
         Ok(())
     }
 }
@@ -317,7 +337,7 @@ impl KeyBankStore {
 #[async_trait]
 impl KeyManager for KeyBankStore {
     async fn reserve(&self, req: KeyRequest) -> Result<KeyReservation, KeyError> {
-        let mut guard = self.state.lock().unwrap();
+        let mut guard = self.state.lock().unwrap_or_else(|e| e.into_inner());
         let needed = req.count.max(1);
         let mut reserved_slots = Vec::new();
         let now = std::time::SystemTime::now()
@@ -367,7 +387,7 @@ impl KeyManager for KeyBankStore {
     }
 
     async fn commit(&self, res: KeyReservation) -> Result<(), KeyError> {
-        let mut guard = self.state.lock().unwrap();
+        let mut guard = self.state.lock().unwrap_or_else(|e| e.into_inner());
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -387,7 +407,7 @@ impl KeyManager for KeyBankStore {
     }
 
     async fn release(&self, res: KeyReservation) -> Result<(), KeyError> {
-        let mut guard = self.state.lock().unwrap();
+        let mut guard = self.state.lock().unwrap_or_else(|e| e.into_inner());
         for key in res.keys {
             if let Some(slot) = guard.slots.iter_mut().find(|s| s.key_id == key.key_id.0) {
                 if slot.state == KeyState::Reserved {
@@ -404,7 +424,7 @@ impl KeyManager for KeyBankStore {
         _peer_sae: SaeId,
         key_ids: &[KeyId],
     ) -> Result<Vec<KeyMaterial>, KeyError> {
-        let mut guard = self.state.lock().unwrap();
+        let mut guard = self.state.lock().unwrap_or_else(|e| e.into_inner());
         let mut results = Vec::new();
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -438,7 +458,7 @@ impl KeyManager for KeyBankStore {
     }
 
     async fn status(&self, _peer_sae: SaeId) -> Result<KeyInventoryStatus, KeyError> {
-        let guard = self.state.lock().unwrap();
+        let guard = self.state.lock().unwrap_or_else(|e| e.into_inner());
         let available = guard
             .slots
             .iter()
@@ -729,7 +749,7 @@ impl QkdSimulator {
 #[async_trait]
 impl KeyManager for QkdSimulator {
     async fn reserve(&self, req: KeyRequest) -> Result<KeyReservation, KeyError> {
-        let mut guard = self.storage.lock().unwrap();
+        let mut guard = self.storage.lock().unwrap_or_else(|e| e.into_inner());
         let count = req.count.max(1);
         let key_len = if req.requested_bytes > 0 {
             (req.requested_bytes / count).max(32)
@@ -759,7 +779,7 @@ impl KeyManager for QkdSimulator {
     }
 
     async fn release(&self, res: KeyReservation) -> Result<(), KeyError> {
-        let mut guard = self.storage.lock().unwrap();
+        let mut guard = self.storage.lock().unwrap_or_else(|e| e.into_inner());
         for k in res.keys {
             guard.remove(&k.key_id.0);
         }
@@ -771,13 +791,12 @@ impl KeyManager for QkdSimulator {
         _peer_sae: SaeId,
         key_ids: &[KeyId],
     ) -> Result<Vec<KeyMaterial>, KeyError> {
-        let guard = self.storage.lock().unwrap();
+        let mut guard = self.storage.lock().unwrap_or_else(|e| e.into_inner());
         let mut results = Vec::new();
 
         for kid in key_ids {
             let bytes = guard
-                .get(&kid.0)
-                .cloned()
+                .remove(&kid.0)
                 .ok_or_else(|| KeyError::KeyNotFound(kid.0.clone()))?;
             results.push(KeyMaterial::new(kid.clone(), bytes));
         }
@@ -786,14 +805,14 @@ impl KeyManager for QkdSimulator {
     }
 
     async fn status(&self, peer_sae: SaeId) -> Result<KeyInventoryStatus, KeyError> {
-        let guard = self.storage.lock().unwrap();
+        let guard = self.storage.lock().unwrap_or_else(|e| e.into_inner());
         Ok(KeyInventoryStatus {
             source_kme_id: "sim-kme-1".into(),
             target_kme_id: "sim-kme-2".into(),
             master_sae_id: 1,
             slave_sae_id: peer_sae.0,
             key_size_bits: 256,
-            stored_key_count: guard.len() + 100,
+            stored_key_count: guard.len(),
             max_key_count: 1000,
         })
     }
@@ -823,6 +842,9 @@ mod tests {
         assert_eq!(recovered.len(), 2);
         assert_eq!(res.keys[0].bytes[..], recovered[0].bytes[..]);
         assert_eq!(res.keys[1].bytes[..], recovered[1].bytes[..]);
+
+        // Key material is now consumed: second recovery attempt must fail (anti-replay)
+        assert!(sim.get_decryption_keys(SaeId(2), &key_ids).await.is_err());
     }
 
     #[tokio::test]
@@ -1037,4 +1059,17 @@ mod tests {
         let my_sae = client.get_my_sae_info().await.unwrap();
         assert_eq!(my_sae, 1);
     }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_keybank_file_permissions_are_0600() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp_file = NamedTempFile::new().unwrap();
+        let path = temp_file.path();
+        let _ = KeyBankStore::open_or_create(path, SaeId(1), SaeId(2)).unwrap();
+        let metadata = std::fs::metadata(path).unwrap();
+        let mode = metadata.permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "Key bank file permissions must be 0600");
+    }
 }
+

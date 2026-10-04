@@ -392,3 +392,95 @@ async fn test_stage4_multiple_attachments_survive() {
         .expect("bin attachment");
     assert_eq!(bin.data, vec![0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0xBA, 0xBE]);
 }
+
+// ── 9. FAULT INJECTION: Replay attack detected and rejected ────────────────
+
+#[tokio::test]
+async fn test_stage4_replay_attack_rejected() {
+    let (sim, crypto) = sim_and_crypto();
+
+    let inner = build_inner_mime_message(
+        "alice@isro.gov.in",
+        &["bob@isro.gov.in".to_string()],
+        "Original Transmission",
+        "Confidential coordinates",
+        None,
+        &[],
+    )
+    .expect("build inner");
+
+    let envelope = package_qumail_message(
+        "alice@isro.gov.in",
+        &["bob@isro.gov.in".to_string()],
+        "Original Transmission",
+        &inner,
+        SecurityLevel::Qaes,
+        SaeId(1),
+        SaeId(2),
+        &sim,
+        &crypto,
+    )
+    .await
+    .expect("package");
+
+    let raw = envelope.formatted();
+
+    // First decryption: succeeds
+    let first = parse_and_decrypt_qumail_message(&raw, &sim, &crypto).await;
+    assert!(first.is_ok(), "First decryption of legitimate message must succeed");
+
+    // Second decryption (replay attempt with exact same envelope): MUST FAIL
+    let replay = parse_and_decrypt_qumail_message(&raw, &sim, &crypto).await;
+    assert!(replay.is_err(), "Replay of previously decrypted message must be rejected");
+    let err_str = replay.unwrap_err().to_string();
+    assert!(
+        err_str.contains("Replay attack detected"),
+        "Error message should mention replay attack detection, got: {err_str}"
+    );
+}
+
+// ── 10. Attachment null-byte and control-char sanitization ──────────────────
+
+#[tokio::test]
+async fn test_stage4_null_byte_filename_sanitized() {
+    let (sim, crypto) = sim_and_crypto();
+
+    let att = EmailAttachment {
+        filename: "malicious.pdf\0.sh".to_string(),
+        content_type: "application/octet-stream".to_string(),
+        data: b"harmless content".to_vec(),
+    };
+
+    let inner = build_inner_mime_message(
+        "alice@isro.gov.in",
+        &["bob@isro.gov.in".to_string()],
+        "Null Byte Test",
+        "Check filename sanitization",
+        None,
+        &[att],
+    )
+    .expect("build inner");
+
+    let envelope = package_qumail_message(
+        "alice@isro.gov.in",
+        &["bob@isro.gov.in".to_string()],
+        "Null Byte Test",
+        &inner,
+        SecurityLevel::Qaes,
+        SaeId(1),
+        SaeId(2),
+        &sim,
+        &crypto,
+    )
+    .await
+    .expect("package");
+
+    let decrypted = parse_and_decrypt_qumail_message(&envelope.formatted(), &sim, &crypto)
+        .await
+        .expect("decrypt");
+
+    assert_eq!(decrypted.attachments.len(), 1);
+    assert!(!decrypted.attachments[0].filename.contains('\0'));
+    assert_eq!(decrypted.attachments[0].filename, "malicious.pdf.sh");
+}
+
