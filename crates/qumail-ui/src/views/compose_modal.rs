@@ -232,9 +232,22 @@ pub fn render_compose_modal(ctx: &Context, state: &mut AppState) {
                     .min_size(vec2(200.0, 32.0));
 
                     if ui.add(send_btn).clicked() {
-                        if state.compose_draft.to.trim().is_empty() {
+                        let to_clean = state.compose_draft.to.trim().to_string();
+                        let from_clean = state.settings.smtp_user.trim().to_string();
+
+                        if to_clean.is_empty() {
                             state.compose_draft.status_message =
                                 Some(("Recipient 'To' address cannot be empty.".to_string(), true));
+                        } else if to_clean.parse::<lettre::message::Mailbox>().is_err() {
+                            state.compose_draft.status_message = Some((
+                                format!("Invalid recipient address '{}': format as user@domain.com", to_clean),
+                                true,
+                            ));
+                        } else if from_clean.is_empty() || from_clean.parse::<lettre::message::Mailbox>().is_err() {
+                            state.compose_draft.status_message = Some((
+                                "Invalid sender email in Settings (gear icon): configure a valid sender email address.".to_string(),
+                                true,
+                            ));
                         } else if !has_enough_keys {
                             state.compose_draft.status_message = Some((
                                 format!("Insufficient key material: requires {} slots, {} available.", needed_slots, available_slots),
@@ -277,8 +290,8 @@ pub fn render_compose_modal(ctx: &Context, state: &mut AppState) {
                             let sent_email = UiEmail {
                                 id: new_id.clone(),
                                 folder: MailFolder::Sent,
-                                from: state.settings.smtp_user.clone(),
-                                to: vec![state.compose_draft.to.clone()],
+                                from: from_clean.clone(),
+                                to: vec![to_clean.clone()],
                                 date: "Just now".to_string(),
                                 subject: subject.clone(),
                                 snippet,
@@ -300,26 +313,30 @@ pub fn render_compose_modal(ctx: &Context, state: &mut AppState) {
                             let smtp_port = state.settings.smtp_port;
                             let smtp_user = state.settings.smtp_user.clone();
                             let smtp_pass = state.settings.smtp_pass.clone();
-                            let from_addr = smtp_user.clone();
-                            let to_addr = state.compose_draft.to.clone();
+                            let from_addr = from_clean;
+                            let to_addr = to_clean;
                             let subject_clone = subject.clone();
                             let body_clone = state.compose_draft.body.clone();
+                            let sec_level = state.compose_draft.security_level;
+                            let attachments_clone = state.compose_draft.attachments.clone();
+                            let key_bank_path = state.settings.key_bank_path.clone();
+                            let sender_sae = state.settings.sender_sae;
+                            let recipient_sae = state.settings.recipient_sae;
 
-                            // Detect demo credentials — skip real network
-                            let is_demo = smtp_user.ends_with("isro.gov.in")
-                                || smtp_pass.contains("•")
-                                || smtp_pass.len() < 4;
+                            let is_demo = smtp_pass.contains('•') || smtp_pass.is_empty();
 
                             if is_demo {
                                 state.notification_toast = Some((
-                                    format!("Email \"{}\" queued (demo mode — no live SMTP).", subject),
+                                    format!("Email stored locally (demo mode). To send directly to {}, configure your SMTP password in Settings.", to_addr),
                                     false,
                                 ));
                             } else {
                                 state.is_sending_smtp = true;
                                 std::thread::spawn(move || {
-                                    use qumail_net::{SmtpConfig, send_smtp_message};
-                                    use lettre::message::SinglePart;
+                                    use qumail_net::{build_inner_mime_message, send_smtp_message, EmailAttachment, SmtpConfig};
+                                    use qumail_core::{SaeId, SecurityLevel};
+                                    use qumail_kme::{KeyBankStore, KeyManager, QkdSimulator};
+                                    use qumail_crypto::QuMailCryptoEngine;
 
                                     let smtp_config = SmtpConfig {
                                         host: smtp_host,
@@ -329,26 +346,88 @@ pub fn render_compose_modal(ctx: &Context, state: &mut AppState) {
                                         implicit_tls: smtp_port == 465,
                                     };
 
-                                    // Build a simple MIME message for the UI-composed draft
-                                    let msg_result = lettre::Message::builder()
-                                        .from(from_addr.parse().unwrap())
-                                        .to(to_addr.parse().unwrap())
-                                        .subject(subject_clone.clone())
-                                        .singlepart(
-                                            SinglePart::plain(body_clone)
-                                        );
+                                    let att_data: Vec<EmailAttachment> = attachments_clone
+                                        .into_iter()
+                                        .map(|a| EmailAttachment {
+                                            filename: a.filename,
+                                            content_type: a.content_type,
+                                            data: a.data,
+                                        })
+                                        .collect();
 
-                                    match msg_result {
-                                        Ok(msg) => match send_smtp_message(&smtp_config, &msg) {
+                                    let inner_res = build_inner_mime_message(
+                                        &from_addr,
+                                        std::slice::from_ref(&to_addr),
+                                        &subject_clone,
+                                        &body_clone,
+                                        None,
+                                        &att_data,
+                                    );
+
+                                    let inner_msg = match inner_res {
+                                        Ok(m) => m,
+                                        Err(e) => {
+                                            let _ = tx.send(SyncResult::SmtpFailure(format!("Message build error: {e}")));
+                                            return;
+                                        }
+                                    };
+
+                                    if sec_level == SecurityLevel::Baseline {
+                                        match send_smtp_message(&smtp_config, &inner_msg) {
                                             Ok(()) => {
                                                 let _ = tx.send(SyncResult::SmtpSuccess(subject_clone));
                                             }
                                             Err(e) => {
                                                 let _ = tx.send(SyncResult::SmtpFailure(e.to_string()));
                                             }
-                                        },
-                                        Err(e) => {
-                                            let _ = tx.send(SyncResult::SmtpFailure(format!("Message build: {}", e)));
+                                        }
+                                    } else {
+                                        let km: std::sync::Arc<dyn KeyManager> = if key_bank_path.exists() {
+                                            KeyBankStore::open_or_create(&key_bank_path, SaeId(sender_sae), SaeId(recipient_sae))
+                                                .map(|s| std::sync::Arc::new(s) as std::sync::Arc<dyn KeyManager>)
+                                                .unwrap_or_else(|_| std::sync::Arc::new(QkdSimulator::new()))
+                                        } else {
+                                            std::sync::Arc::new(QkdSimulator::new())
+                                        };
+
+                                        let crypto = QuMailCryptoEngine::new();
+
+                                        let rt = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+                                            Ok(r) => r,
+                                            Err(e) => {
+                                                let _ = tx.send(SyncResult::SmtpFailure(format!("Tokio runtime error: {e}")));
+                                                return;
+                                            }
+                                        };
+
+                                        let packaged_res = rt.block_on(async {
+                                            qumail_net::package_qumail_message(
+                                                &from_addr,
+                                                std::slice::from_ref(&to_addr),
+                                                &subject_clone,
+                                                &inner_msg,
+                                                sec_level,
+                                                SaeId(sender_sae),
+                                                SaeId(recipient_sae),
+                                                km.as_ref(),
+                                                &crypto,
+                                            ).await
+                                        });
+
+                                        match packaged_res {
+                                            Ok(packaged) => {
+                                                match send_smtp_message(&smtp_config, &packaged) {
+                                                    Ok(()) => {
+                                                        let _ = tx.send(SyncResult::SmtpSuccess(subject_clone));
+                                                    }
+                                                    Err(e) => {
+                                                        let _ = tx.send(SyncResult::SmtpFailure(e.to_string()));
+                                                    }
+                                                }
+                                            }
+                                            Err(e) => {
+                                                let _ = tx.send(SyncResult::SmtpFailure(format!("Envelope packaging error: {e}")));
+                                            }
                                         }
                                     }
                                 });

@@ -22,6 +22,10 @@ pub enum SyncResult {
     SmtpSuccess(String),
     /// SMTP send failed.
     SmtpFailure(String),
+    /// SMTP connection test succeeded.
+    SmtpTestSuccess(String),
+    /// SMTP connection test failed.
+    SmtpTestFailure(String),
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -88,7 +92,7 @@ impl Default for ComposeDraft {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct SettingsConfig {
     pub smtp_host: String,
     pub smtp_port: u16,
@@ -104,6 +108,54 @@ pub struct SettingsConfig {
     pub recipient_sae: u64,
     pub pqc_public_key_b64: String,
     pub dsa_public_key_b64: String,
+}
+
+impl SettingsConfig {
+    pub fn config_path() -> PathBuf {
+        if let Ok(p) = std::env::var("QMAIL_CONFIG") {
+            return PathBuf::from(p);
+        }
+        let local = PathBuf::from("qumail_config.json");
+        if local.exists() {
+            return local;
+        }
+        if let Ok(home) = std::env::var("HOME") {
+            let user_cfg = PathBuf::from(home).join(".config").join("qumail").join("config.json");
+            if user_cfg.exists() {
+                return user_cfg;
+            }
+        }
+        local
+    }
+
+    pub fn load() -> Self {
+        let path = Self::config_path();
+        if path.exists() {
+            if let Ok(data) = std::fs::read_to_string(&path) {
+                if let Ok(cfg) = serde_json::from_str::<SettingsConfig>(&data) {
+                    return cfg;
+                }
+            }
+        }
+        Self::default()
+    }
+
+    pub fn save(&self) -> anyhow::Result<()> {
+        let path = Self::config_path();
+        if let Some(parent) = path.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent)?;
+            }
+        }
+        let json = serde_json::to_string_pretty(self)?;
+        std::fs::write(&path, json)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+        }
+        Ok(())
+    }
 }
 
 impl Default for SettingsConfig {
@@ -148,6 +200,8 @@ pub struct AppState {
     pub is_syncing: bool,
     /// True while an SMTP send is in-flight.
     pub is_sending_smtp: bool,
+    /// True while an SMTP connection test is in-flight.
+    pub is_testing_smtp: bool,
 }
 
 impl AppState {
@@ -165,12 +219,13 @@ impl AppState {
             emails,
             key_bank_status: KeyBankStatus::default(),
             compose_draft: ComposeDraft::default(),
-            settings: SettingsConfig::default(),
+            settings: SettingsConfig::load(),
             notification_toast: None,
             sync_rx,
             sync_tx,
             is_syncing: false,
             is_sending_smtp: false,
+            is_testing_smtp: false,
         }
     }
 
@@ -201,6 +256,15 @@ impl AppState {
                     self.is_sending_smtp = false;
                     self.notification_toast =
                         Some((format!("SMTP error: {}", msg), true));
+                }
+                SyncResult::SmtpTestSuccess(msg) => {
+                    self.is_testing_smtp = false;
+                    self.notification_toast = Some((msg, false));
+                }
+                SyncResult::SmtpTestFailure(msg) => {
+                    self.is_testing_smtp = false;
+                    self.notification_toast =
+                        Some((format!("SMTP Test Failed: {}", msg), true));
                 }
             }
         }
@@ -440,5 +504,42 @@ impl AppState {
                 raw_mime_size: 2600,
             },
         ]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_settings_save_and_load_roundtrip() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config_file = temp_dir.path().join("qumail_test_config.json");
+        std::env::set_var("QMAIL_CONFIG", &config_file);
+
+        let settings = SettingsConfig {
+            smtp_host: "smtp.custom-domain.org".to_string(),
+            smtp_user: "alice@custom-domain.org".to_string(),
+            smtp_pass: "super-secret-token".to_string(),
+            ..Default::default()
+        };
+
+        settings.save().unwrap();
+        assert!(config_file.exists());
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let meta = std::fs::metadata(&config_file).unwrap();
+            let mode = meta.permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600, "Config file permissions must be 0600");
+        }
+
+        let loaded = SettingsConfig::load();
+        assert_eq!(loaded.smtp_host, "smtp.custom-domain.org");
+        assert_eq!(loaded.smtp_user, "alice@custom-domain.org");
+        assert_eq!(loaded.smtp_pass, "super-secret-token");
+
+        std::env::remove_var("QMAIL_CONFIG");
     }
 }

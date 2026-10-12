@@ -3,7 +3,7 @@
 //! Provides configuration for SMTP, IMAP, ETSI GS QKD 014 REST KME,
 //! local ISRO 100 x 1 Kb key banks, and NIST FIPS 203 PQC key generation.
 
-use crate::state::{ActiveModal, AppState};
+use crate::state::{ActiveModal, AppState, SettingsConfig};
 use crate::theme::QuMailTheme;
 use egui::{vec2, Align2, Color32, Context, RichText, ScrollArea, Window};
 use qumail_crypto::QuMailCryptoEngine;
@@ -149,6 +149,34 @@ pub fn render_settings_modal(ctx: &Context, state: &mut AppState) {
                         );
                         ui.add_space(4.0);
 
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new("Quick Presets:").size(11.0).color(QuMailTheme::TEXT_MUTED));
+                            if ui.button("Gmail").clicked() {
+                                state.settings.smtp_host = "smtp.gmail.com".to_string();
+                                state.settings.smtp_port = 587;
+                                state.settings.imap_host = "imap.gmail.com".to_string();
+                                state.settings.imap_port = 993;
+                            }
+                            if ui.button("Outlook / 365").clicked() {
+                                state.settings.smtp_host = "smtp-mail.outlook.com".to_string();
+                                state.settings.smtp_port = 587;
+                                state.settings.imap_host = "outlook.office365.com".to_string();
+                                state.settings.imap_port = 993;
+                            }
+                            if ui.button("Yahoo Mail").clicked() {
+                                state.settings.smtp_host = "smtp.mail.yahoo.com".to_string();
+                                state.settings.smtp_port = 587;
+                                state.settings.imap_host = "imap.mail.yahoo.com".to_string();
+                                state.settings.imap_port = 993;
+                            }
+                            if ui.button("Custom").clicked() {
+                                state.settings.smtp_port = 587;
+                                state.settings.imap_port = 993;
+                            }
+                        });
+
+                        ui.add_space(6.0);
+
                         egui::Grid::new("transport_settings_grid")
                             .num_columns(2)
                             .spacing(vec2(10.0, 6.0))
@@ -160,17 +188,27 @@ pub fn render_settings_modal(ctx: &Context, state: &mut AppState) {
                                 });
                                 ui.end_row();
 
-                                ui.label("SMTP Username:");
-                                ui.add(egui::TextEdit::singleline(&mut state.settings.smtp_user).desired_width(260.0));
+                                ui.label("SMTP Username (Email):");
+                                let smtp_user_changed = ui.add(
+                                    egui::TextEdit::singleline(&mut state.settings.smtp_user)
+                                        .desired_width(260.0)
+                                        .hint_text("your_name@example.com"),
+                                ).changed();
+                                if smtp_user_changed && (state.settings.imap_user.is_empty() || state.settings.imap_user == "officer.sac@isro.gov.in") {
+                                    state.settings.imap_user = state.settings.smtp_user.clone();
+                                }
                                 ui.end_row();
 
                                 ui.label("SMTP Password:");
-                                ui.add(
+                                let pass_changed = ui.add(
                                     egui::TextEdit::singleline(&mut state.settings.smtp_pass)
                                         .password(true)
                                         .desired_width(260.0)
-                                        .hint_text("Gmail: use App Password (16 chars)"),
-                                );
+                                        .hint_text("Gmail: 16-character App Password"),
+                                ).changed();
+                                if pass_changed && (state.settings.imap_pass.is_empty() || state.settings.imap_pass == "••••••••••••") {
+                                    state.settings.imap_pass = state.settings.smtp_pass.clone();
+                                }
                                 ui.end_row();
 
                                 ui.label("IMAP Host / Port:");
@@ -194,14 +232,52 @@ pub fn render_settings_modal(ctx: &Context, state: &mut AppState) {
                                 ui.end_row();
                             });
 
-                        ui.add_space(4.0);
+                        ui.add_space(8.0);
+
+                        ui.horizontal(|ui| {
+                            let test_btn = egui::Button::new(
+                                RichText::new(if state.is_testing_smtp {
+                                    "Testing SMTP Connection..."
+                                } else {
+                                    "Test SMTP Connection"
+                                })
+                                .size(11.5)
+                                .strong(),
+                            );
+
+                            if ui.add_enabled(!state.is_testing_smtp, test_btn).clicked() {
+                                state.is_testing_smtp = true;
+                                let tx = state.sync_tx.clone();
+                                let cfg = qumail_net::SmtpConfig {
+                                    host: state.settings.smtp_host.clone(),
+                                    port: state.settings.smtp_port,
+                                    username: state.settings.smtp_user.clone(),
+                                    password: state.settings.smtp_pass.clone(),
+                                    implicit_tls: state.settings.smtp_port == 465,
+                                };
+                                std::thread::spawn(move || {
+                                    match qumail_net::test_smtp_connection(&cfg) {
+                                        Ok(()) => {
+                                            let _ = tx.send(crate::state::SyncResult::SmtpTestSuccess(
+                                                format!("SMTP authentication with {} succeeded.", cfg.host)
+                                            ));
+                                        }
+                                        Err(e) => {
+                                            let _ = tx.send(crate::state::SyncResult::SmtpTestFailure(e.to_string()));
+                                        }
+                                    }
+                                });
+                            }
+                        });
+
+                        ui.add_space(6.0);
                         egui::Frame::none()
                             .fill(QuMailTheme::BG_CARD)
                             .rounding(4.0)
                             .inner_margin(egui::Margin::symmetric(10.0, 6.0))
                             .show(ui, |ui| {
                                 ui.label(
-                                    RichText::new("ℹ Gmail: enable 2-Step Verification → myaccount.google.com/apppasswords → generate 'QuMail' app password. Use port 587 (STARTTLS) or 465 (TLS).")
+                                    RichText::new("Direct Real Email Notice: For Gmail, enable 2-Step Verification at myaccount.google.com/security, generate a 16-character App Password at myaccount.google.com/apppasswords, and paste it into the password field above. Use port 587 (STARTTLS).")
                                         .size(10.5)
                                         .color(QuMailTheme::TEXT_MUTED),
                                 );
@@ -213,7 +289,20 @@ pub fn render_settings_modal(ctx: &Context, state: &mut AppState) {
                 ui.horizontal(|ui| {
                     if ui.button(RichText::new("Save & Close").size(12.0).strong()).clicked() {
                         should_close = true;
-                        state.notification_toast = Some(("Settings successfully updated.".to_string(), false));
+                        match state.settings.save() {
+                            Ok(()) => {
+                                state.notification_toast = Some((
+                                    format!("Settings saved to {}.", SettingsConfig::config_path().display()),
+                                    false,
+                                ));
+                            }
+                            Err(e) => {
+                                state.notification_toast = Some((
+                                    format!("Failed to save settings: {}", e),
+                                    true,
+                                ));
+                            }
+                        }
                     }
                 });
             });

@@ -690,6 +690,31 @@ pub fn send_smtp_message(config: &SmtpConfig, message: &Message) -> Result<()> {
     Ok(())
 }
 
+pub fn test_smtp_connection(config: &SmtpConfig) -> Result<()> {
+    let creds = Credentials::new(config.username.clone(), config.password.clone());
+    let tls_params = TlsParametersBuilder::new(config.host.clone()).build()?;
+    let builder = if config.implicit_tls {
+        SmtpTransport::relay(&config.host)?
+            .port(config.port)
+            .tls(Tls::Required(tls_params))
+    } else {
+        SmtpTransport::relay(&config.host)?
+            .port(config.port)
+            .tls(Tls::Opportunistic(tls_params))
+    };
+
+    let transport = builder
+        .credentials(creds)
+        .pool_config(Default::default())
+        .build();
+
+    let is_ok = transport.test_connection().context("SMTP connection test failed")?;
+    if !is_ok {
+        anyhow::bail!("SMTP server did not accept connection test");
+    }
+    Ok(())
+}
+
 pub struct ImapConfig {
     pub host: String,
     pub port: u16,

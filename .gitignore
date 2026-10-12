@@ -13,6 +13,7 @@ pqc_keypair*.json
 *.p12
 *.pem
 *.key
+qumail_config.json
 
 # Editor files
 .vscode/
