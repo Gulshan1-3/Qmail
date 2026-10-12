@@ -1,0 +1,10 @@
+{
+  "name": "qumail-fluid-web",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "QuMail Fluid Web Client — Apple WWDC 2018 Fluid Interface",
+  "scripts": {
+    "start": "python3 -m http.server 8080 --directory .",
+    "test": "node tests/physics.test.mjs"
+  }
+}

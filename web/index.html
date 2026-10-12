@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <title>QuMail — Quantum-Safe Email Client</title>
+  <link rel="stylesheet" href="css/main.css">
+  <link rel="stylesheet" href="css/materials.css">
+  <link rel="stylesheet" href="css/components.css">
+</head>
+<body class="glass-surface-base">
+  <div class="app-shell">
+    
+    <!-- Left Navigation & Key Bank Sidebar -->
+    <aside class="app-sidebar glass-sidebar">
+      <div class="brand-header">
+        <div class="brand-title-row">
+          <span class="brand-logo-icon">⚡</span>
+          <span class="brand-name">QuMail</span>
+          <span class="brand-badge">SECURE</span>
+        </div>
+        <div class="brand-subtitle">ISRO QKD-Assisted Email Client</div>
+      </div>
+
+      <button class="btn-new-mail" id="btn-open-compose">
+        <span>✏️</span> New Quantum Mail
+      </button>
+
+      <div class="folder-section-title">Folders</div>
+      <div class="folder-list">
+        <button class="folder-item active" data-folder="inbox">
+          <div class="folder-left"><span>📥</span> Inbox</div>
+          <span class="folder-badge" id="inbox-count-badge">5</span>
+        </button>
+        <button class="folder-item" data-folder="sent">
+          <div class="folder-left"><span>📤</span> Sent</div>
+        </button>
+        <button class="folder-item" data-folder="drafts">
+          <div class="folder-left"><span>📝</span> Drafts</div>
+        </button>
+        <button class="folder-item" data-folder="trash">
+          <div class="folder-left"><span>🗑</span> Trash</div>
+        </button>
+      </div>
+
+      <!-- Quantum Key Gauge -->
+      <div class="quantum-gauge-card glass-card" id="key-gauge-container">
+        <div class="gauge-title-row">
+          <span class="gauge-title">Symmetric Key Bank</span>
+          <span class="gauge-count-label">98/100</span>
+        </div>
+        <div class="gauge-bar-track">
+          <div class="gauge-bar-fill"></div>
+        </div>
+        <div class="gauge-meta">
+          <div>Slot Size: 8192 bits (1024 B)</div>
+          <div class="gauge-capacity-label">Capacity: 100.4 KB available</div>
+        </div>
+        <div class="gauge-link-row">Link SAE: 1 ⇄ 2</div>
+        <div class="gauge-status-row">
+          <span class="status-dot"></span>
+          <span>KME SYNCHRONIZED</span>
+        </div>
+        <button class="btn-sync-inbox">
+          <span class="sync-icon">🔄</span> Sync Inbox
+        </button>
+      </div>
+
+      <footer class="sidebar-footer">
+        <div class="user-avatar">👤</div>
+        <div class="user-details">
+          <span class="user-name">officer.sac@isro.gov.in</span>
+          <span class="user-sae">SAE Node: #1 (Master)</span>
+        </div>
+      </footer>
+    </aside>
+
+    <!-- Center Email List Pane -->
+    <section class="email-list-pane glass-list">
+      <div class="list-header">
+        <div class="search-bar-container">
+          <span class="search-icon">🔍</span>
+          <input type="text" class="search-input" id="search-input" placeholder="Search quantum messages...">
+        </div>
+        <div class="level-filters-row">
+          <button class="filter-pill active" data-filter="all">All Levels</button>
+          <button class="filter-pill l1" data-filter="L1">L1 Baseline</button>
+          <button class="filter-pill l2" data-filter="L2">L2 Q-AES</button>
+          <button class="filter-pill l25" data-filter="L2.5">L2.5 Hybrid</button>
+          <button class="filter-pill l3" data-filter="L3">L3 OTP</button>
+        </div>
+      </div>
+
+      <!-- Scrollable Message List (Swipeable Items rendered dynamically) -->
+      <div class="email-scroll-list" id="email-list-container"></div>
+    </section>
+
+    <!-- Right Reading Pane -->
+    <main class="reading-pane glass-reading" id="reading-pane-container"></main>
+
+  </div>
+
+  <!-- Compose Modal Sheet -->
+  <div class="modal-overlay" id="compose-overlay">
+    <div class="modal-sheet glass-sheet" id="compose-sheet">
+      <div class="sheet-grab-bar-area">
+        <div class="sheet-grab-handle"></div>
+      </div>
+      <div class="sheet-header">
+        <h2 class="sheet-title">New Quantum Encrypted Message</h2>
+        <button class="btn-close-sheet" title="Close">✕</button>
+      </div>
+      <form class="sheet-form" id="compose-form">
+        <div class="form-group-row">
+          <label class="form-label" for="compose-to">To (Recipient SAE)</label>
+          <input type="email" id="compose-to" class="form-input" placeholder="officer@isro.gov.in" value="dr.sivan@isro.gov.in" required>
+        </div>
+        <div class="form-group-row">
+          <label class="form-label" for="compose-sec-level">Security Tier</label>
+          <select id="compose-sec-level" class="form-select">
+            <option value="L3">L3: Quantum Secure Vernam OTP (Information-Theoretic)</option>
+            <option value="L2.5" selected>L2.5: Hybrid Post-Quantum (ML-KEM-768 + QKD Dual-PRF)</option>
+            <option value="L2">L2: Quantum-Aided AES-256-GCM (Seed derived from QKD)</option>
+            <option value="L1">L1: Baseline Transport TLS (No payload encryption)</option>
+          </select>
+          <div id="key-requirement-badge" class="key-estimate-pill l25-badge">
+            Calculating key requirements...
+          </div>
+        </div>
+        <div class="form-group-row">
+          <label class="form-label" for="compose-subject">Subject</label>
+          <input type="text" id="compose-subject" class="form-input" placeholder="Mission telemetry coordinates..." required>
+        </div>
+        <div class="form-group-row" style="flex: 1;">
+          <label class="form-label" for="compose-body">Payload</label>
+          <textarea id="compose-body" class="form-textarea" placeholder="Compose confidential communication..."></textarea>
+        </div>
+        <div class="sheet-footer">
+          <button type="submit" class="btn-send-quantum">
+            <span>🚀</span> Send Quantum Mail
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Cryptographic Inspector Modal -->
+  <div class="inspector-overlay" id="inspector-overlay">
+    <div class="inspector-modal-card glass-sheet" id="inspector-modal">
+      <div class="inspector-header">
+        <h3 style="font-size: 1.1rem; font-weight: 700;">QuMail Cryptographic Envelope Inspector</h3>
+        <button class="btn-close-inspector" title="Close">✕</button>
+      </div>
+      <div class="inspector-body">
+        <div style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 10px;">
+          Decrypted RFC 822 / <code>application/vnd.qumail.header+json</code> MIME Part Payload:
+        </div>
+        <pre class="inspector-json-content"></pre>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>

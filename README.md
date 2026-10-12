@@ -49,6 +49,8 @@ crates/
   qumail-cli      Command-line tool (qumail binary)
   qumail-ui       Desktop GUI (qumail-gui binary, built with egui)
 
+web/              Fluid web client prototype (Apple WWDC 2018 gesture physics)
+
 docs/
   architecture.md   System design and module responsibilities
   protocol.md       Wire format, envelope schema, cryptographic flows
@@ -168,6 +170,18 @@ The GUI is a three-pane layout similar to Outlook. The left panel shows your fol
 From the GUI you can compose messages with real-time key consumption estimates, sync your inbox over IMAP, and open a cryptographic inspector that shows the raw envelope header, nonces, key IDs, and ML-KEM ciphertext for any received message.
 
 Configure your SMTP and IMAP credentials and key paths under Settings.
+
+---
+
+## Web client
+
+QuMail includes a fluid web client prototype implementing Apple WWDC gesture physics (1:1 direct tracking, momentum projection, rubberbanding, and interruptible springs):
+
+```bash
+cd web
+npm test    # Run physics engine unit tests
+npm start   # Start local preview server at http://localhost:8080
+```
 
 ---
 

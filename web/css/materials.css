@@ -1,0 +1,61 @@
+/**
+ * Apple WWDC 2018 Designing Fluid Interfaces — Materials & Translucency
+ * Principle 12: Translucency conveys hierarchy, vibrancy keeps legibility.
+ */
+
+.glass-material {
+  backdrop-filter: blur(24px) saturate(190%);
+  -webkit-backdrop-filter: blur(24px) saturate(190%);
+}
+
+.glass-surface-base {
+  background: var(--bg-space);
+  background-image: 
+    radial-gradient(circle at 15% 20%, rgba(14, 165, 233, 0.05) 0%, transparent 40%),
+    radial-gradient(circle at 85% 80%, rgba(168, 85, 247, 0.04) 0%, transparent 45%);
+}
+
+.glass-sidebar {
+  background: var(--bg-sidebar);
+  backdrop-filter: blur(28px) saturate(190%);
+  -webkit-backdrop-filter: blur(28px) saturate(190%);
+  border-right: 1px solid var(--border-subtle);
+}
+
+.glass-list {
+  background: var(--bg-list);
+  backdrop-filter: blur(20px) saturate(180%);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  border-right: 1px solid var(--border-subtle);
+}
+
+.glass-reading {
+  background: var(--bg-reading);
+  backdrop-filter: blur(24px) saturate(190%);
+  -webkit-backdrop-filter: blur(24px) saturate(190%);
+}
+
+.glass-card {
+  background: var(--bg-card);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid var(--border-subtle);
+  border-top: 1px solid var(--border-light-edge); /* light catching top edge */
+  box-shadow: 0 4px 20px -2px rgba(0, 0, 0, 0.35);
+}
+
+.glass-sheet {
+  background: rgba(15, 23, 42, 0.88);
+  backdrop-filter: blur(36px) saturate(200%);
+  -webkit-backdrop-filter: blur(36px) saturate(200%);
+  border: 1px solid var(--border-subtle);
+  border-top: 1px solid rgba(255, 255, 255, 0.22); /* crisp top catchlight */
+  box-shadow: 0 -10px 40px rgba(0, 0, 0, 0.6);
+}
+
+.glass-pill {
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid var(--border-subtle);
+  border-top: 1px solid rgba(255, 255, 255, 0.2);
+}
