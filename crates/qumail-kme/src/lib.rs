@@ -988,12 +988,9 @@ mod tests {
                                 "200 OK",
                                 r#"{"source_kme_id":"1","target_kme_id":"2","master_sae_id":1,"slave_sae_id":2,"key_size":256,"stored_key_count":50,"max_key_count":100}"#,
                             )
-                        } else if req.contains("POST /api/v1/keys/2/enc_keys") {
-                            (
-                                "200 OK",
-                                r#"{"keys":[{"key_ID":"test-uuid-1","key":"dGhpc19pc19zZWNyZXRfa2V5XzFfb2ZfMzJfYnl0ZXM="}]}"#,
-                            )
-                        } else if req.contains("POST /api/v1/keys/1/dec_keys") {
+                        } else if req.contains("POST /api/v1/keys/2/enc_keys")
+                            || req.contains("POST /api/v1/keys/1/dec_keys")
+                        {
                             (
                                 "200 OK",
                                 r#"{"keys":[{"key_ID":"test-uuid-1","key":"dGhpc19pc19zZWNyZXRfa2V5XzFfb2ZfMzJfYnl0ZXM="}]}"#,

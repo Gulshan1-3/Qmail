@@ -32,3 +32,4 @@ zeroize = { version = "1.8", features = ["derive", "zeroize_derive"] }
 base64 = "0.22"
 uuid = { version = "1.8", features = ["v4", "serde"] }
 rand = "0.8"
+ml-dsa = { version = "0.1.1", features = ["zeroize", "alloc"] }

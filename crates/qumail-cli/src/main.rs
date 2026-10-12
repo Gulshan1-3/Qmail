@@ -8,12 +8,13 @@ use anyhow::{anyhow, Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use qumail_core::{SaeId, SecurityLevel};
 use qumail_crypto::{
-    DecapsulationKey, EncapsulationKey, MlKem768, PqcKeyPairBundle, QuMailCryptoEngine,
+    DecapsulationKey, DsaKeyPairBundle, EncapsulationKey, MlDsa65, MlKem768, PqcKeyPairBundle,
+    QuMailCryptoEngine, SigningKey,
 };
 use qumail_kme::{Etsi014Client, KeyBankStore, KeyManager, QkdSimulator};
 use qumail_net::{
-    build_inner_mime_message, fetch_imap_messages, package_qumail_message, send_smtp_message,
-    EmailAttachment, ImapConfig, SmtpConfig,
+    build_inner_mime_message, fetch_imap_messages, package_qumail_message_signed,
+    send_smtp_message, EmailAttachment, ImapConfig, SmtpConfig,
 };
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -126,6 +127,10 @@ enum Commands {
         #[arg(long, env = "QMAIL_RECIPIENT_PQC_KEY")]
         recipient_pqc_key: Option<String>,
 
+        /// Path to local ML-DSA-65 signing key file (JSON bundle or seed base64) for quantum digital signature
+        #[arg(long, env = "QMAIL_DSA_KEY")]
+        dsa_key: Option<String>,
+
         #[arg(long, default_value_t = false)]
         dry_run: bool,
     },
@@ -224,6 +229,13 @@ enum Commands {
         #[arg(long, short, default_value = "pqc_keypair.json")]
         out: PathBuf,
     },
+
+    /// Generate a fresh NIST FIPS 204 ML-DSA-65 keypair for post-quantum digital signatures
+    GenerateDsaKey {
+        /// File path to save the JSON keypair bundle
+        #[arg(long, short, default_value = "dsa_keypair.json")]
+        out: PathBuf,
+    },
 }
 
 fn init_tracing(level: &str) -> Result<()> {
@@ -309,6 +321,31 @@ fn resolve_pqc_decapsulation_key(
     Ok(Some(dk))
 }
 
+fn resolve_dsa_signing_key(
+    key_arg: Option<&str>,
+) -> Result<Option<SigningKey<MlDsa65>>> {
+    let Some(arg) = key_arg else {
+        return Ok(None);
+    };
+    let bytes = if Path::new(arg).exists() {
+        let content = fs::read_to_string(arg)?;
+        if let Ok(bundle) = serde_json::from_str::<DsaKeyPairBundle>(&content) {
+            use base64::Engine;
+            base64::engine::general_purpose::STANDARD.decode(bundle.secret_key_b64)?
+        } else {
+            use base64::Engine;
+            base64::engine::general_purpose::STANDARD.decode(content.trim())?
+        }
+    } else {
+        use base64::Engine;
+        base64::engine::general_purpose::STANDARD.decode(arg.trim())?
+    };
+    let sk = QuMailCryptoEngine::parse_dsa_signing_key(&bytes)
+        .map_err(|e| anyhow!("Failed to parse ML-DSA signing key: {e}"))?;
+    Ok(Some(sk))
+}
+
+
 fn resolve_key_manager(
     key_bank: Option<&Path>,
     km_url: Option<&str>,
@@ -358,6 +395,7 @@ async fn main() -> Result<()> {
             sender_sae,
             recipient_sae,
             recipient_pqc_key,
+            dsa_key,
             dry_run,
         } => {
             let mut att_data = Vec::new();
@@ -389,10 +427,11 @@ async fn main() -> Result<()> {
             )?;
 
             let recipient_pqc = resolve_pqc_encapsulation_key(recipient_pqc_key.as_deref())?;
+            let signing_key = resolve_dsa_signing_key(dsa_key.as_deref())?;
             let crypto = QuMailCryptoEngine::with_pqc_keys(None, recipient_pqc);
             let sec_level: SecurityLevel = security.into();
 
-            let packaged = package_qumail_message(
+            let packaged = package_qumail_message_signed(
                 &from,
                 &to,
                 &subject,
@@ -402,12 +441,16 @@ async fn main() -> Result<()> {
                 SaeId(recipient_sae),
                 km.as_ref(),
                 &crypto,
+                signing_key.as_ref(),
             )
             .await?;
 
             if dry_run {
                 println!("\n=== [Dry Run] Built Envelope ===");
                 println!("Security Level: {sec_level}");
+                if signing_key.is_some() {
+                    println!("Digital Signature: Attached (NIST FIPS 204 ML-DSA-65)");
+                }
                 println!("Recipients: {}", to.join(", "));
                 println!("Message Size: {} bytes", packaged.formatted().len());
                 return Ok(());
@@ -480,11 +523,17 @@ async fn main() -> Result<()> {
 
             for (idx, em) in emails.iter().enumerate() {
                 println!(
-                    "\n[{}] {} | {} | Security: [{}]",
+                    "\n[{}] {} | {} | Security: [{}] | Signature: [{}]",
                     idx + 1,
                     em.date,
                     em.from,
-                    em.security_level
+                    em.security_level,
+                    match em.signature_status {
+                        qumail_core::SignatureStatus::Valid => "VALID (ML-DSA-65)",
+                        qumail_core::SignatureStatus::Invalid => "INVALID / FORGED",
+                        qumail_core::SignatureStatus::MissingKey => "KEY MISSING",
+                        qumail_core::SignatureStatus::Unsigned => "UNSIGNED",
+                    }
                 );
                 println!("Subject: {}", em.subject);
                 if !em.text_body.is_empty() {
@@ -572,5 +621,16 @@ async fn main() -> Result<()> {
             println!("Public Encapsulation Key (Base64):\n{}", bundle.public_key_b64);
             Ok(())
         }
+
+        Commands::GenerateDsaKey { out } => {
+            let (sk, vk) = QuMailCryptoEngine::generate_dsa_keypair();
+            let bundle = QuMailCryptoEngine::export_dsa_keypair(&sk, &vk);
+            bundle.save_to_file(&out)?;
+            println!("\n=== Generated NIST FIPS 204 ML-DSA-65 Keypair ===");
+            println!("Saved keypair bundle to: {}", out.display());
+            println!("Public Verifying Key (Base64):\n{}", bundle.public_key_b64);
+            Ok(())
+        }
     }
 }
+

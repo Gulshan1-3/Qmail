@@ -5,7 +5,7 @@
 
 use crate::state::{ActiveModal, AppState};
 use crate::theme::QuMailTheme;
-use egui::{vec2, Align2, Context, RichText, ScrollArea, Window};
+use egui::{vec2, Align2, Color32, Context, RichText, ScrollArea, Window};
 use qumail_crypto::QuMailCryptoEngine;
 
 pub fn render_settings_modal(ctx: &Context, state: &mut AppState) {
@@ -107,9 +107,42 @@ pub fn render_settings_modal(ctx: &Context, state: &mut AppState) {
                         ui.separator();
                         ui.add_space(8.0);
 
-                        // 3. SMTP & IMAP Transport Settings
+                        // 3. Post-Quantum Digital Signature Identity (NIST FIPS 204 ML-DSA-65)
                         ui.label(
-                            RichText::new("3. MAIL SERVER TRANSPORT (SMTP & IMAP)")
+                            RichText::new("3. NIST FIPS 204 ML-DSA-65 DIGITAL SIGNATURE KEY")
+                                .size(12.5)
+                                .strong()
+                                .color(Color32::from_rgb(52, 211, 153)),
+                        );
+                        ui.add_space(4.0);
+
+                        ui.horizontal(|ui| {
+                            if ui.button(RichText::new("⚡ Generate Fresh ML-DSA Keypair").size(11.5)).clicked() {
+                                let (sk, vk) = QuMailCryptoEngine::generate_dsa_keypair();
+                                let bundle = QuMailCryptoEngine::export_dsa_keypair(&sk, &vk);
+                                state.settings.dsa_public_key_b64 = bundle.public_key_b64;
+                                state.notification_toast = Some((
+                                    "Fresh NIST FIPS 204 ML-DSA-65 keypair generated.".to_string(),
+                                    false,
+                                ));
+                            }
+                        });
+
+                        ui.add_space(4.0);
+                        ui.label(RichText::new("Local Public Verifying Key (Base64):").size(10.5).color(QuMailTheme::TEXT_MUTED));
+                        ui.add(
+                            egui::TextEdit::multiline(&mut state.settings.dsa_public_key_b64)
+                                .desired_rows(3)
+                                .desired_width(ui.available_width()),
+                        );
+
+                        ui.add_space(12.0);
+                        ui.separator();
+                        ui.add_space(8.0);
+
+                        // 4. SMTP & IMAP Transport Settings
+                        ui.label(
+                            RichText::new("4. MAIL SERVER TRANSPORT (SMTP & IMAP)")
                                 .size(12.5)
                                 .strong()
                                 .color(QuMailTheme::TEXT_PRIMARY),

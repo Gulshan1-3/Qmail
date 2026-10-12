@@ -11,6 +11,9 @@ use aes_gcm::{Aes256Gcm, Nonce};
 use hkdf::Hkdf;
 use ml_kem::kem::{Decapsulate, Encapsulate, KeyExport, TryKeyInit};
 pub use ml_kem::{DecapsulationKey, EncapsulationKey, Kem, MlKem768};
+pub use ml_dsa::signature::{Keypair, Signer, Verifier};
+use ml_dsa::KeyInit as DsaKeyInit;
+pub use ml_dsa::{MlDsa65, Signature, SigningKey, VerifyingKey};
 use rand_core::{TryCryptoRng, TryRng};
 use poly1305::universal_hash::UniversalHash;
 use poly1305::Poly1305;
@@ -65,6 +68,9 @@ pub enum CryptoError {
     #[error("post-quantum cryptography failure: {0}")]
     Pqc(String),
 
+    #[error("digital signature failure: {0}")]
+    Signature(String),
+
     #[error("unsupported or unexpected security level for operation: {0}")]
     UnsupportedSecurityLevel(String),
 }
@@ -106,6 +112,45 @@ pub struct PqcKeyPairBundle {
     pub secret_key_b64: String,
 }
 
+/// Bundle containing Base64-encoded NIST FIPS 204 ML-DSA-65 public and secret keys.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DsaKeyPairBundle {
+    pub public_key_b64: String,
+    pub secret_key_b64: String,
+}
+
+impl DsaKeyPairBundle {
+    pub fn save_to_file(&self, path: impl AsRef<std::path::Path>) -> Result<(), std::io::Error> {
+        let json = serde_json::to_string_pretty(self)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        #[cfg(unix)]
+        {
+            use std::fs::OpenOptions;
+            use std::io::Write;
+            use std::os::unix::fs::OpenOptionsExt;
+            let mut file = OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .mode(0o600)
+                .open(path)?;
+            file.write_all(json.as_bytes())?;
+            file.flush()?;
+            Ok(())
+        }
+        #[cfg(not(unix))]
+        {
+            std::fs::write(path, json)
+        }
+    }
+
+    pub fn load_from_file(path: impl AsRef<std::path::Path>) -> Result<Self, std::io::Error> {
+        let data = std::fs::read_to_string(path)?;
+        serde_json::from_str(&data)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+    }
+}
+
 /// Production implementation of the QuMail Cryptographic Dispatcher.
 #[derive(Default, Clone)]
 pub struct QuMailCryptoEngine {
@@ -113,6 +158,10 @@ pub struct QuMailCryptoEngine {
     local_pqc_key: Option<Arc<DecapsulationKey<MlKem768>>>,
     /// Optional recipient ML-KEM public key for sending Level 2.5 messages
     recipient_pqc_key: Option<Arc<EncapsulationKey<MlKem768>>>,
+    /// Optional local ML-DSA-65 signing key for signing outgoing messages
+    local_dsa_key: Option<Arc<SigningKey<MlDsa65>>>,
+    /// Optional peer ML-DSA-65 public key for verifying incoming messages
+    peer_dsa_key: Option<Arc<VerifyingKey<MlDsa65>>>,
 }
 
 use std::sync::Arc;
@@ -122,6 +171,8 @@ impl QuMailCryptoEngine {
         Self {
             local_pqc_key: None,
             recipient_pqc_key: None,
+            local_dsa_key: None,
+            peer_dsa_key: None,
         }
     }
 
@@ -129,6 +180,8 @@ impl QuMailCryptoEngine {
         Self {
             local_pqc_key: Some(Arc::new(dk)),
             recipient_pqc_key: None,
+            local_dsa_key: None,
+            peer_dsa_key: None,
         }
     }
 
@@ -136,6 +189,8 @@ impl QuMailCryptoEngine {
         Self {
             local_pqc_key: None,
             recipient_pqc_key: Some(Arc::new(ek)),
+            local_dsa_key: None,
+            peer_dsa_key: None,
         }
     }
 
@@ -146,7 +201,49 @@ impl QuMailCryptoEngine {
         Self {
             local_pqc_key: dk.map(Arc::new),
             recipient_pqc_key: ek.map(Arc::new),
+            local_dsa_key: None,
+            peer_dsa_key: None,
         }
+    }
+
+    pub fn with_dsa_signing_key(sk: SigningKey<MlDsa65>) -> Self {
+        Self {
+            local_pqc_key: None,
+            recipient_pqc_key: None,
+            local_dsa_key: Some(Arc::new(sk)),
+            peer_dsa_key: None,
+        }
+    }
+
+    pub fn with_peer_dsa_key(vk: VerifyingKey<MlDsa65>) -> Self {
+        Self {
+            local_pqc_key: None,
+            recipient_pqc_key: None,
+            local_dsa_key: None,
+            peer_dsa_key: Some(Arc::new(vk)),
+        }
+    }
+
+    pub fn with_all_keys(
+        dk: Option<DecapsulationKey<MlKem768>>,
+        ek: Option<EncapsulationKey<MlKem768>>,
+        sk: Option<SigningKey<MlDsa65>>,
+        vk: Option<VerifyingKey<MlDsa65>>,
+    ) -> Self {
+        Self {
+            local_pqc_key: dk.map(Arc::new),
+            recipient_pqc_key: ek.map(Arc::new),
+            local_dsa_key: sk.map(Arc::new),
+            peer_dsa_key: vk.map(Arc::new),
+        }
+    }
+
+    pub fn local_dsa_signing_key(&self) -> Option<&SigningKey<MlDsa65>> {
+        self.local_dsa_key.as_deref()
+    }
+
+    pub fn peer_dsa_verifying_key(&self) -> Option<&VerifyingKey<MlDsa65>> {
+        self.peer_dsa_key.as_deref()
     }
 
     /// Generates a fresh NIST FIPS 203 ML-KEM-768 keypair.
@@ -185,6 +282,71 @@ impl QuMailCryptoEngine {
         let mut seed = [0u8; 64];
         seed.copy_from_slice(bytes);
         Ok(DecapsulationKey::<MlKem768>::from_seed(seed.into()))
+    }
+
+    /// Generates a fresh NIST FIPS 204 ML-DSA-65 keypair.
+    pub fn generate_dsa_keypair() -> (SigningKey<MlDsa65>, VerifyingKey<MlDsa65>) {
+        let mut seed = [0u8; 32];
+        rand::thread_rng().fill_bytes(&mut seed);
+        let sk = SigningKey::<MlDsa65>::from_seed(&seed.into());
+        let vk = sk.verifying_key().clone();
+        seed.zeroize();
+        (sk, vk)
+    }
+
+    /// Exports an ML-DSA-65 keypair as Base64-encoded strings.
+    pub fn export_dsa_keypair(
+        sk: &SigningKey<MlDsa65>,
+        vk: &VerifyingKey<MlDsa65>,
+    ) -> DsaKeyPairBundle {
+        use base64::engine::general_purpose::STANDARD;
+        use base64::Engine;
+        DsaKeyPairBundle {
+            public_key_b64: STANDARD.encode(vk.encode()),
+            secret_key_b64: STANDARD.encode(sk.as_seed().as_slice()),
+        }
+    }
+
+    /// Parses an ML-DSA-65 verifying (public) key from bytes.
+    pub fn parse_dsa_verifying_key(bytes: &[u8]) -> Result<VerifyingKey<MlDsa65>, CryptoError> {
+        DsaKeyInit::new_from_slice(bytes)
+            .map_err(|e| CryptoError::Signature(format!("invalid ML-DSA verifying key: {e:?}")))
+    }
+
+    /// Parses an ML-DSA-65 signing (secret) key from 32-byte seed.
+    pub fn parse_dsa_signing_key(bytes: &[u8]) -> Result<SigningKey<MlDsa65>, CryptoError> {
+        if bytes.len() != 32 {
+            return Err(CryptoError::Signature(format!(
+                "invalid ML-DSA signing key seed length: expected 32, got {}",
+                bytes.len()
+            )));
+        }
+        let mut seed = [0u8; 32];
+        seed.copy_from_slice(bytes);
+        let sk = SigningKey::<MlDsa65>::from_seed(&seed.into());
+        seed.zeroize();
+        Ok(sk)
+    }
+
+    /// Computes a detached ML-DSA-65 signature over arbitrary data.
+    pub fn sign_detached(
+        sk: &SigningKey<MlDsa65>,
+        data: &[u8],
+    ) -> Vec<u8> {
+        let sig: Signature<MlDsa65> = sk.sign(data);
+        sig.encode().to_vec()
+    }
+
+    /// Verifies a detached ML-DSA-65 signature over data against the verifying key.
+    pub fn verify_detached(
+        vk: &VerifyingKey<MlDsa65>,
+        data: &[u8],
+        sig_bytes: &[u8],
+    ) -> Result<(), CryptoError> {
+        let sig = Signature::<MlDsa65>::try_from(sig_bytes)
+            .map_err(|e| CryptoError::Signature(format!("invalid ML-DSA signature bytes: {e:?}")))?;
+        vk.verify(data, &sig)
+            .map_err(|e| CryptoError::Signature(format!("signature verification failed: {e:?}")))
     }
 
     /// Derives a 256-bit AES key and a 96-bit nonce from a QKD key and context using HKDF-SHA256.
@@ -560,6 +722,7 @@ impl CryptoProvider for QuMailCryptoEngine {
 }
 
 #[cfg(test)]
+#[allow(clippy::cloned_ref_to_slice_refs)]
 mod tests {
     use super::*;
     use qumail_core::{KeyId, MessageId, SaeId};
@@ -759,4 +922,57 @@ mod tests {
             Err(CryptoError::AuthenticationFailed)
         ));
     }
+
+    #[test]
+    fn test_dsa_keypair_export_and_parse() {
+        let (sk, vk) = QuMailCryptoEngine::generate_dsa_keypair();
+        let bundle = QuMailCryptoEngine::export_dsa_keypair(&sk, &vk);
+
+        use base64::engine::general_purpose::STANDARD;
+        use base64::Engine;
+
+        let pk_bytes = STANDARD.decode(&bundle.public_key_b64).unwrap();
+        let sk_bytes = STANDARD.decode(&bundle.secret_key_b64).unwrap();
+
+        let parsed_vk = QuMailCryptoEngine::parse_dsa_verifying_key(&pk_bytes).unwrap();
+        let parsed_sk = QuMailCryptoEngine::parse_dsa_signing_key(&sk_bytes).unwrap();
+
+        let data = b"ISRO Space Commission Mission Directive";
+        let sig = QuMailCryptoEngine::sign_detached(&parsed_sk, data);
+        assert!(QuMailCryptoEngine::verify_detached(&parsed_vk, data, &sig).is_ok());
+    }
+
+    #[test]
+    fn test_dsa_tampered_signature_rejected() {
+        let (sk, vk) = QuMailCryptoEngine::generate_dsa_keypair();
+        let data = b"Orbital Burn Telemetry Parameters";
+        let mut sig = QuMailCryptoEngine::sign_detached(&sk, data);
+
+        // Tamper with signature bytes
+        sig[10] ^= 0x55;
+        assert!(QuMailCryptoEngine::verify_detached(&vk, data, &sig).is_err());
+    }
+
+    #[test]
+    fn test_dsa_tampered_message_rejected() {
+        let (sk, vk) = QuMailCryptoEngine::generate_dsa_keypair();
+        let data = b"Transfer 10 QKD Keys to Node 2";
+        let sig = QuMailCryptoEngine::sign_detached(&sk, data);
+
+        let tampered_data = b"Transfer 10 QKD Keys to Node 9";
+        assert!(QuMailCryptoEngine::verify_detached(&vk, tampered_data, &sig).is_err());
+    }
+
+    #[test]
+    fn test_dsa_wrong_public_key_rejected() {
+        let (sk1, _vk1) = QuMailCryptoEngine::generate_dsa_keypair();
+        let (_sk2, vk2) = QuMailCryptoEngine::generate_dsa_keypair();
+
+        let data = b"Authentic Message from Alice";
+        let sig = QuMailCryptoEngine::sign_detached(&sk1, data);
+
+        // Verification against Bob's public key must fail
+        assert!(QuMailCryptoEngine::verify_detached(&vk2, data, &sig).is_err());
+    }
 }
+

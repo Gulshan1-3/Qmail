@@ -22,3 +22,4 @@ base64 = { workspace = true }
 tracing = { workspace = true }
 ml-kem = { version = "0.3", features = ["zeroize", "alloc"] }
 rand_core = "0.10"
+ml-dsa = { workspace = true }

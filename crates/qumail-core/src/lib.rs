@@ -56,6 +56,40 @@ impl FromStr for SecurityLevel {
     }
 }
 
+/// Status of cryptographic digital signature verification on a message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SignatureStatus {
+    /// Cryptographic signature verified successfully with sender's public key.
+    Valid,
+    /// Cryptographic signature is invalid, corrupted, or forged.
+    Invalid,
+    /// Message claims to be signed, but sender public key or signature is missing.
+    MissingKey,
+    /// Message is not digitally signed.
+    Unsigned,
+}
+
+impl SignatureStatus {
+    pub fn is_valid(&self) -> bool {
+        matches!(self, Self::Valid)
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Valid => "valid",
+            Self::Invalid => "invalid",
+            Self::MissingKey => "missing_key",
+            Self::Unsigned => "unsigned",
+        }
+    }
+}
+
+impl fmt::Display for SignatureStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
 /// Strongly typed Message Identifier.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct MessageId(pub String);
@@ -230,4 +264,14 @@ mod tests {
         ctx3.recipient_sae = SaeId(21);
         assert_ne!(ctx1.to_aad_bytes(), ctx3.to_aad_bytes());
     }
+
+    #[test]
+    fn test_signature_status() {
+        assert!(SignatureStatus::Valid.is_valid());
+        assert!(!SignatureStatus::Invalid.is_valid());
+        assert!(!SignatureStatus::MissingKey.is_valid());
+        assert!(!SignatureStatus::Unsigned.is_valid());
+        assert_eq!(SignatureStatus::Valid.to_string(), "valid");
+    }
 }
+

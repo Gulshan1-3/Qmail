@@ -44,7 +44,7 @@ async fn main() -> Result<()> {
     // ── 4. Recover QKD key from receiver's key bank ───────────────────────
     println!("\n🗝️  Recovering QKD key from receiver bank...");
     let key_id = KeyId(header.key_ids[0].clone());
-    let keys = km.get_decryption_keys(SaeId(1), &[key_id.clone()])
+    let keys = km.get_decryption_keys(SaeId(1), std::slice::from_ref(&key_id))
         .await
         .map_err(|e| anyhow::anyhow!("Key bank error: {e}"))?;
     let qkd_key = keys.into_iter().next()
@@ -79,7 +79,7 @@ async fn main() -> Result<()> {
         message_id: MessageId(header.message_id.clone()),
         sender_sae: SaeId(header.sender_sae),
         recipient_sae: SaeId(header.recipient_sae),
-        key_id: key_id,
+        key_id,
         timestamp_epoch_secs: header.timestamp_epoch_secs,
     };
 

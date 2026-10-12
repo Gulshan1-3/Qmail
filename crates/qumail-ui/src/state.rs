@@ -103,6 +103,7 @@ pub struct SettingsConfig {
     pub sender_sae: u64,
     pub recipient_sae: u64,
     pub pqc_public_key_b64: String,
+    pub dsa_public_key_b64: String,
 }
 
 impl Default for SettingsConfig {
@@ -121,6 +122,7 @@ impl Default for SettingsConfig {
             sender_sae: 1,
             recipient_sae: 2,
             pqc_public_key_b64: "5nMALNJ4udJ6KXlcBqnI7jsSUFRuEkZLBEJGdnFby4ic...".to_string(),
+            dsa_public_key_b64: "".to_string(),
         }
     }
 }
@@ -244,7 +246,7 @@ impl AppState {
             SecurityLevel::HybridPqc => (1, "1 slot (ML-KEM-768 ciphertext + 32-byte QKD Dual-PRF)"),
             SecurityLevel::QuantumOtp => {
                 let needed_bytes = payload_bytes + 32; // OTP XOR + Carter-Wegman MAC key
-                let slots = (needed_bytes + 1023) / 1024;
+                let slots = needed_bytes.div_ceil(1024);
                 (slots, "Information-Theoretic Vernam OTP + Carter-Wegman Poly1305 MAC")
             }
         }
@@ -304,6 +306,8 @@ impl AppState {
                     tag_b64: Some("N8J9Xz4vL1q7Y0w2==".to_string()),
                     nonce_b64: None,
                     pqc_ciphertext_b64: None,
+                    signature_b64: Some("dsa_sig_otp_42_verified_ok".to_string()),
+                    signer_pubkey_b64: Some("dsa_pub_director_isro_65".to_string()),
                 }),
                 raw_mime_size: 7820,
             },
@@ -346,6 +350,8 @@ impl AppState {
                     tag_b64: None,
                     nonce_b64: Some("dGVzdG5vbmNlMTI=".to_string()),
                     pqc_ciphertext_b64: Some("5nMALNJ4udJ6KXlcBqnI7jsSUFRuEk...".to_string()),
+                    signature_b64: Some("dsa_sig_pqc_78_verified_ok".to_string()),
+                    signer_pubkey_b64: Some("dsa_pub_ursc_bangalore_65".to_string()),
                 }),
                 raw_mime_size: 4210,
             },
@@ -381,6 +387,8 @@ impl AppState {
                     tag_b64: None,
                     nonce_b64: Some("a2V5bm9uY2UxMjM0".to_string()),
                     pqc_ciphertext_b64: None,
+                    signature_b64: None,
+                    signer_pubkey_b64: None,
                 }),
                 raw_mime_size: 2150,
             },

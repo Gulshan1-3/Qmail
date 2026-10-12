@@ -102,7 +102,7 @@ pub fn render_compose_modal(ctx: &Context, state: &mut AppState) {
                 ui.add_space(8.0);
 
                 // Live Key Consumption Estimation Box
-                let text_len = state.compose_draft.body.as_bytes().len();
+                let text_len = state.compose_draft.body.len();
                 let att_len: usize = state.compose_draft.attachments.iter().map(|a| a.size_bytes).sum();
                 let total_payload = text_len + att_len;
 

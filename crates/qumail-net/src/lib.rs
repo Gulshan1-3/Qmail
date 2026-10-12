@@ -12,8 +12,10 @@ use lettre::{SmtpTransport, Transport};
 use mailparse::{parse_mail, MailHeaderMap, ParsedMail};
 use mime_guess::MimeGuess;
 use native_tls::TlsConnector;
-use qumail_core::{CryptoContext, KeyId, MessageId, SaeId, SecurityLevel};
-use qumail_crypto::{CryptoProvider, EncryptedMessage};
+use qumail_core::{CryptoContext, KeyId, MessageId, SaeId, SecurityLevel, SignatureStatus};
+use qumail_crypto::{
+    CryptoProvider, EncryptedMessage, Keypair, MlDsa65, QuMailCryptoEngine, SigningKey,
+};
 use qumail_kme::{KeyManager, KeyRequest};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -115,6 +117,10 @@ pub struct QuMailEnvelopeHeader {
     pub nonce_b64: Option<String>,
     #[serde(default)]
     pub pqc_ciphertext_b64: Option<String>,
+    #[serde(default)]
+    pub signature_b64: Option<String>,
+    #[serde(default)]
+    pub signer_pubkey_b64: Option<String>,
 }
 
 /// Decrypted and parsed high-level email message ready for display.
@@ -130,6 +136,8 @@ pub struct DecryptedEmail {
     pub security_level: SecurityLevel,
     pub is_encrypted: bool,
     pub key_ids: Vec<KeyId>,
+    pub signature_status: SignatureStatus,
+    pub signer_pubkey_b64: Option<String>,
 }
 
 // ============================================================================
@@ -178,8 +186,9 @@ pub fn build_inner_mime_message(
     }
 }
 
-/// Encapsulates an inner RFC 822 email into a standard QuMail `multipart/encrypted` envelope.
-pub async fn package_qumail_message(
+/// Encapsulates an inner RFC 822 email into a standard QuMail `multipart/encrypted` envelope with optional ML-DSA-65 post-quantum signature.
+#[allow(clippy::too_many_arguments)]
+pub async fn package_qumail_message_signed(
     from: &str,
     to: &[String],
     subject: &str,
@@ -189,6 +198,7 @@ pub async fn package_qumail_message(
     recipient_sae: SaeId,
     key_manager: &dyn KeyManager,
     crypto: &dyn CryptoProvider,
+    signing_key: Option<&SigningKey<MlDsa65>>,
 ) -> Result<Message> {
     if security_level == SecurityLevel::Baseline {
         // Level 1: Return raw email without envelope transformation
@@ -237,6 +247,20 @@ pub async fn package_qumail_message(
         .await
         .map_err(|e| anyhow!("KME commit failed: {e}"))?;
 
+    // Compute detached ML-DSA-65 signature if signing key provided
+    let (signature_b64, signer_pubkey_b64) = if let Some(sk) = signing_key {
+        let mut sign_payload = context.to_aad_bytes();
+        sign_payload.extend_from_slice(&encrypted.ciphertext);
+        let sig = QuMailCryptoEngine::sign_detached(sk, &sign_payload);
+        let vk = sk.verifying_key();
+        (
+            Some(base64::engine::general_purpose::STANDARD.encode(&sig)),
+            Some(base64::engine::general_purpose::STANDARD.encode(vk.encode())),
+        )
+    } else {
+        (None, None)
+    };
+
     // Build JSON metadata header part
     let header_meta = QuMailEnvelopeHeader {
         version: 1,
@@ -255,6 +279,8 @@ pub async fn package_qumail_message(
         pqc_ciphertext_b64: encrypted
             .pqc_ciphertext
             .map(|c| base64::engine::general_purpose::STANDARD.encode(c)),
+        signature_b64,
+        signer_pubkey_b64,
     };
 
     let header_json = serde_json::to_string_pretty(&header_meta)?;
@@ -286,6 +312,34 @@ pub async fn package_qumail_message(
         .context("building outer encrypted envelope")
 }
 
+/// Encapsulates an inner RFC 822 email into a standard QuMail `multipart/encrypted` envelope without signature.
+#[allow(clippy::too_many_arguments)]
+pub async fn package_qumail_message(
+    from: &str,
+    to: &[String],
+    subject: &str,
+    inner_msg: &Message,
+    security_level: SecurityLevel,
+    sender_sae: SaeId,
+    recipient_sae: SaeId,
+    key_manager: &dyn KeyManager,
+    crypto: &dyn CryptoProvider,
+) -> Result<Message> {
+    package_qumail_message_signed(
+        from,
+        to,
+        subject,
+        inner_msg,
+        security_level,
+        sender_sae,
+        recipient_sae,
+        key_manager,
+        crypto,
+        None,
+    )
+    .await
+}
+
 // ============================================================================
 // 2. MIME Envelope Parsing & Decryption
 // ============================================================================
@@ -304,6 +358,9 @@ pub async fn parse_and_decrypt_qumail_message(
         .unwrap_or_default();
     let outer_from = parsed.headers.get_first_value("From").unwrap_or_default();
     let outer_date = parsed.headers.get_first_value("Date").unwrap_or_default();
+    let outer_content_type = parsed.headers.get_first_value("Content-Type").unwrap_or_default();
+    let is_qumail_envelope = outer_content_type.contains(QUMAIL_MIME_PROTOCOL)
+        || outer_subject.starts_with("[QuMail-");
 
     // Check if message is a QuMail encrypted envelope
     let mut envelope_meta: Option<QuMailEnvelopeHeader> = None;
@@ -385,6 +442,34 @@ pub async fn parse_and_decrypt_qumail_message(
 
         let (text, html, attachments) = extract_content_and_attachments(&inner_parsed)?;
 
+        // Verify ML-DSA-65 signature if present in envelope
+        let mut signature_status = SignatureStatus::Unsigned;
+        if let Some(ref sig_b64) = meta.signature_b64 {
+            if let Some(ref pubkey_b64) = meta.signer_pubkey_b64 {
+                match (
+                    base64::engine::general_purpose::STANDARD.decode(sig_b64),
+                    base64::engine::general_purpose::STANDARD.decode(pubkey_b64),
+                ) {
+                    (Ok(sig_bytes), Ok(pk_bytes)) => {
+                        match QuMailCryptoEngine::parse_dsa_verifying_key(&pk_bytes) {
+                            Ok(vk) => {
+                                let mut sign_payload = context.to_aad_bytes();
+                                sign_payload.extend_from_slice(&encrypted.ciphertext);
+                                match QuMailCryptoEngine::verify_detached(&vk, &sign_payload, &sig_bytes) {
+                                    Ok(_) => signature_status = SignatureStatus::Valid,
+                                    Err(_) => signature_status = SignatureStatus::Invalid,
+                                }
+                            }
+                            Err(_) => signature_status = SignatureStatus::MissingKey,
+                        }
+                    }
+                    _ => signature_status = SignatureStatus::Invalid,
+                }
+            } else {
+                signature_status = SignatureStatus::MissingKey;
+            }
+        }
+
         Ok(DecryptedEmail {
             date: inner_date,
             from: inner_from,
@@ -402,7 +487,13 @@ pub async fn parse_and_decrypt_qumail_message(
             security_level: meta.security_level,
             is_encrypted: true,
             key_ids,
+            signature_status,
+            signer_pubkey_b64: meta.signer_pubkey_b64.clone(),
         })
+    } else if is_qumail_envelope {
+        Err(anyhow!(
+            "Corrupted or tampered QuMail encrypted envelope: missing cryptographic metadata or ciphertext payload"
+        ))
     } else {
         // Standard unencrypted email (Level 1 Baseline)
         let (text, html, attachments) = extract_content_and_attachments(&parsed)?;
@@ -421,12 +512,14 @@ pub async fn parse_and_decrypt_qumail_message(
             html_body: html,
             attachments,
             security_level: SecurityLevel::Baseline,
-
             is_encrypted: false,
             key_ids: vec![],
+            signature_status: SignatureStatus::Unsigned,
+            signer_pubkey_b64: None,
         })
     }
 }
+
 
 fn extract_qumail_parts(
     part: &ParsedMail,
@@ -673,7 +766,7 @@ mod tests {
             "Trajectory Update",
             "Please find attached orbital parameters.",
             Some("<p>Please find attached orbital parameters.</p>"),
-            &[attachment.clone()],
+            std::slice::from_ref(&attachment),
         )
         .unwrap();
 

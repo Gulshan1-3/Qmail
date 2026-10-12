@@ -13,8 +13,8 @@
 use qumail_crypto::QuMailCryptoEngine;
 use qumail_kme::QkdSimulator;
 use qumail_net::{
-    build_inner_mime_message, package_qumail_message, parse_and_decrypt_qumail_message,
-    EmailAttachment,
+    build_inner_mime_message, package_qumail_message, package_qumail_message_signed,
+    parse_and_decrypt_qumail_message, EmailAttachment,
 };
 use qumail_core::{SaeId, SecurityLevel};
 
@@ -483,4 +483,87 @@ async fn test_stage4_null_byte_filename_sanitized() {
     assert!(!decrypted.attachments[0].filename.contains('\0'));
     assert_eq!(decrypted.attachments[0].filename, "malicious.pdf.sh");
 }
+
+// ── 11. ML-DSA-65 Post-Quantum Digital Signatures (NIST FIPS 204) ─────────
+
+#[tokio::test]
+async fn test_stage4_ml_dsa_65_signed_package_and_verify() {
+    let (sim, crypto) = sim_and_crypto();
+    let (sk, _vk) = QuMailCryptoEngine::generate_dsa_keypair();
+
+    let inner = build_inner_mime_message(
+        "director@isro.gov.in",
+        &["officer.sac@isro.gov.in".to_string()],
+        "Quantum Mission Directive",
+        "Authorize orbital burn for PSLV-C58.",
+        None,
+        &[],
+    )
+    .expect("build inner");
+
+    let envelope = package_qumail_message_signed(
+        "director@isro.gov.in",
+        &["officer.sac@isro.gov.in".to_string()],
+        "Quantum Mission Directive",
+        &inner,
+        SecurityLevel::Qaes,
+        SaeId(1),
+        SaeId(2),
+        &sim,
+        &crypto,
+        Some(&sk),
+    )
+    .await
+    .expect("package signed");
+
+    let decrypted = parse_and_decrypt_qumail_message(&envelope.formatted(), &sim, &crypto)
+        .await
+        .expect("decrypt");
+
+    assert_eq!(decrypted.security_level, SecurityLevel::Qaes);
+    assert_eq!(decrypted.signature_status, qumail_core::SignatureStatus::Valid);
+    assert!(decrypted.signer_pubkey_b64.is_some());
+}
+
+#[tokio::test]
+async fn test_stage4_ml_dsa_65_tampered_signature_flagged_invalid() {
+    let (sim, crypto) = sim_and_crypto();
+    let (sk, _vk) = QuMailCryptoEngine::generate_dsa_keypair();
+
+    let inner = build_inner_mime_message(
+        "director@isro.gov.in",
+        &["officer.sac@isro.gov.in".to_string()],
+        "Directive",
+        "Classified data",
+        None,
+        &[],
+    )
+    .expect("build inner");
+
+    let envelope = package_qumail_message_signed(
+        "director@isro.gov.in",
+        &["officer.sac@isro.gov.in".to_string()],
+        "Directive",
+        &inner,
+        SecurityLevel::Qaes,
+        SaeId(1),
+        SaeId(2),
+        &sim,
+        &crypto,
+        Some(&sk),
+    )
+    .await
+    .expect("package signed");
+
+    // Tamper with the signature string in the JSON header
+    let raw_str = String::from_utf8_lossy(&envelope.formatted()).to_string();
+    let tampered_str = raw_str.replace("\"signature_b64\": \"", "\"signature_b64\": \"AAAA");
+
+    let decrypted = parse_and_decrypt_qumail_message(tampered_str.as_bytes(), &sim, &crypto)
+        .await
+        .expect("decrypt");
+
+    assert_eq!(decrypted.signature_status, qumail_core::SignatureStatus::Invalid);
+}
+
 

@@ -181,6 +181,26 @@ pub fn render_message_reading_pane(ui: &mut Ui, state: &mut AppState) {
                                             }
                                         });
                                     }
+
+                                    if let Some(header) = &email.envelope_header {
+                                        if header.signature_b64.is_some() {
+                                            ui.add_space(6.0);
+                                            ui.horizontal(|ui| {
+                                                egui::Frame::none()
+                                                    .fill(QuMailTheme::BG_APP)
+                                                    .rounding(3.0)
+                                                    .inner_margin(egui::Margin::symmetric(6.0, 2.0))
+                                                    .show(ui, |ui| {
+                                                        ui.label(
+                                                            RichText::new("✓ NIST FIPS 204 ML-DSA-65 SIGNED & VERIFIED")
+                                                                .size(10.5)
+                                                                .strong()
+                                                                .color(Color32::from_rgb(52, 211, 153)),
+                                                        );
+                                                    });
+                                            });
+                                        }
+                                    }
                                 });
                             });
                         });

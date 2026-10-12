@@ -5,7 +5,7 @@
 
 use crate::state::{ActiveModal, AppState};
 use crate::theme::QuMailTheme;
-use egui::{vec2, Align2, Context, RichText, ScrollArea, Window};
+use egui::{vec2, Align2, Color32, Context, RichText, ScrollArea, Window};
 
 pub fn render_inspector_modal(ctx: &Context, state: &mut AppState) {
     if state.active_modal != ActiveModal::EnvelopeInspector {
@@ -116,6 +116,34 @@ pub fn render_inspector_modal(ctx: &Context, state: &mut AppState) {
                                         })
                                         .monospace()
                                         .color(QuMailTheme::L25_PURPLE_FG),
+                                    );
+                                    ui.end_row();
+                                }
+
+                                if let Some(sig) = &header.signature_b64 {
+                                    ui.label(RichText::new("ML-DSA-65 Signature:").strong());
+                                    ui.label(
+                                        RichText::new(if sig.len() > 60 {
+                                            format!("{}... ({} bytes)", &sig[..60], sig.len())
+                                        } else {
+                                            sig.clone()
+                                        })
+                                        .monospace()
+                                        .color(Color32::from_rgb(52, 211, 153)),
+                                    );
+                                    ui.end_row();
+                                }
+
+                                if let Some(pk) = &header.signer_pubkey_b64 {
+                                    ui.label(RichText::new("Signer Public Key:").strong());
+                                    ui.label(
+                                        RichText::new(if pk.len() > 60 {
+                                            format!("{}... ({} bytes)", &pk[..60], pk.len())
+                                        } else {
+                                            pk.clone()
+                                        })
+                                        .monospace()
+                                        .color(Color32::from_rgb(52, 211, 153)),
                                     );
                                     ui.end_row();
                                 }
